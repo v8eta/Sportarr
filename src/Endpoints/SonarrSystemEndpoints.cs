@@ -20,7 +20,11 @@ public static class SonarrSystemEndpoints
 
             return Results.Ok(new
             {
-                appName = "Sportarr",
+                // Report as "Sonarr" so Sonarr-API clients (autobrr's arr push/test,
+                // etc.) accept this v3 endpoint as a real Sonarr. instanceName keeps
+                // the Sportarr identity for humans. Prowlarr already syncs to it as a
+                // Sonarr app, so this is consistent.
+                appName = "Sonarr",
                 instanceName = "Sportarr",
                 version = Sportarr.Api.Version.AppVersion,
                 buildTime = DateTime.UtcNow,

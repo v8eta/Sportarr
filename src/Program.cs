@@ -791,6 +791,7 @@ app.MapV1ProwlarrEndpoints(dataPath);
 // /api/v3/* — Decypharr/Maintainerr/ArrControl expect this contract
 app.MapSonarrSystemEndpoints(dataPath);
 app.MapSonarrCommandEndpoints();
+app.MapSonarrReleasePushEndpoints();
 app.MapSonarrSeriesEndpoints();
 app.MapSonarrCalendarEndpoint();
 app.MapSonarrEpisodeFileEndpoints();

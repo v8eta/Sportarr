@@ -11,6 +11,19 @@ namespace Sportarr.Api.Endpoints;
 
 public static class SonarrCommandEndpoints
 {
+    // Sonarr-style "command" names that map to real, no-argument background tasks
+    // TaskService can actually execute. Previously every command except ManualImport
+    // fell through to the catch-all below and returned a fake "completed" without
+    // doing anything — so RssSync triggers (e.g. from autobrr) silently no-op'd.
+    // Maps lower-case input -> canonical CommandName TaskService.ExecuteCommandAsync expects.
+    private static readonly Dictionary<string, string> QueueableCommands = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["RssSync"] = "RssSync",
+        ["RefreshDownloads"] = "RefreshDownloads",
+        ["IndexerSync"] = "IndexerSync",
+        ["EpgSync"] = "EpgSync",
+    };
+
     public static IEndpointRouteBuilder MapSonarrCommandEndpoints(this IEndpointRouteBuilder app)
     {
         // GET /api/v3/manualimport - Get files ready for manual import
@@ -148,7 +161,7 @@ public static class SonarrCommandEndpoints
         });
 
         // POST /api/v3/command - Execute commands (used by Decypharr for ManualImport)
-        app.MapPost("/api/v3/command", async (HttpContext context, SportarrDbContext db, FileImportService fileImportService, ILogger<Program> logger) =>
+        app.MapPost("/api/v3/command", async (HttpContext context, SportarrDbContext db, FileImportService fileImportService, TaskService taskService, ILogger<Program> logger) =>
         {
             using var reader = new StreamReader(context.Request.Body);
             var json = await reader.ReadToEndAsync();
@@ -202,9 +215,34 @@ public static class SonarrCommandEndpoints
                         updateScheduledTask = false
                     });
                 }
+                else if (!string.IsNullOrEmpty(commandName) && QueueableCommands.TryGetValue(commandName, out var canonicalCommand))
+                {
+                    // Queue a REAL task so the command actually runs (TaskService picks it up
+                    // and routes it through ExecuteCommandAsync). This is what makes an
+                    // autobrr/Prowlarr "RssSync" trigger perform an actual RSS sync instead
+                    // of silently returning "completed".
+                    var queued = await taskService.QueueTaskAsync(
+                        name: canonicalCommand,
+                        commandName: canonicalCommand,
+                        priority: 0);
+
+                    logger.LogInformation("[SONARR-API] Queued '{Command}' as task {TaskId}", canonicalCommand, queued.Id);
+
+                    return Results.Ok(new
+                    {
+                        id = queued.Id,
+                        name = canonicalCommand,
+                        commandName = canonicalCommand,
+                        status = "queued",
+                        queued = queued.Queued.ToString("o"),
+                        trigger = "manual",
+                        sendUpdatesToClient = true,
+                        updateScheduledTask = false
+                    });
+                }
                 else
                 {
-                    logger.LogInformation("[DECYPHARR] Unknown command: {Command}", commandName);
+                    logger.LogInformation("[SONARR-API] Unknown command (no-op): {Command}", commandName);
                     return Results.Ok(new
                     {
                         id = new Random().Next(1, 10000),
