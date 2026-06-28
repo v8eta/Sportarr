@@ -147,6 +147,12 @@ public class Config
     public int BacklogSearchMaxConcurrent { get; set; } = 3; // SemaphoreSlim cap so backlog doesn't hammer indexers
     public int BacklogSearchMaxAgeDays { get; set; } = 365; // skip events older than this on backlog pass (1y by default; 0 = no cap)
     public bool BacklogSearchEnabled { get; set; } = true;
+    // Cutoff-unmet (quality-upgrade) backlog only: stop hunting upgrades for an event once it's
+    // older than this many days. Prevents perpetual fruitless upgrade searches when the profile
+    // cutoff is effectively unreachable for the content (e.g. F1 DARKSPORT is HDTV, never WEB-2160p),
+    // which would otherwise re-search every has-file event every pass forever. Missing-event backlog
+    // is unaffected (it uses BacklogSearchMaxAgeDays). 0 = no upgrade time-limit (legacy behaviour).
+    public int BacklogUpgradeMaxAgeDays { get; set; } = 3;
 
     // Indexer minimum age.
     // Wait this many minutes after a release was posted to the indexer before

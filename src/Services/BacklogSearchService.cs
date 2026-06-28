@@ -127,6 +127,18 @@ public class BacklogSearchService : BackgroundService
         if (oldestAllowed.HasValue)
             cutoffQuery = cutoffQuery.Where(e => e.EventDate >= oldestAllowed.Value);
 
+        // Upgrade time-limit: only chase quality upgrades for events aired within the last
+        // BacklogUpgradeMaxAgeDays. After that, accept the file we have and stop re-searching.
+        // Without this, events whose profile cutoff is effectively unreachable for the content
+        // (e.g. F1 DARKSPORT is HDTV but the profile cutoff is WEB-2160p) stay "below cutoff"
+        // forever and get re-searched across every indexer on every 6h pass — pure waste.
+        // Missing-event backlog is unaffected (it uses BacklogSearchMaxAgeDays).
+        if (config.BacklogUpgradeMaxAgeDays > 0)
+        {
+            var upgradeCutoff = DateTime.UtcNow.AddDays(-config.BacklogUpgradeMaxAgeDays);
+            cutoffQuery = cutoffQuery.Where(e => e.EventDate >= upgradeCutoff);
+        }
+
         // Pull existing-file quality strings alongside the candidate so we can
         // filter out events whose stored quality is unparseable (score 0). Auto
         // cutoff-upgrade against an unparseable existing quality would always
