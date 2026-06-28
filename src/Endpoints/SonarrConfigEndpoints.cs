@@ -33,7 +33,12 @@ public static class SonarrConfigEndpoints
         {
             logger.LogDebug("[V3-COMPAT] GET /api/v3/qualityprofile");
 
-            var profiles = await db.QualityProfiles.Include(p => p.Items).ToListAsync();
+            // QualityProfile.Items is a JSON-serialized column (value converter), NOT a
+            // navigation property — .Include(p => p.Items) throws "'p.Items' is invalid
+            // inside 'Include'" and 500s this endpoint (breaks Maintainerr + Prowlarr
+            // quality-profile reads). The converter materializes Items with the entity,
+            // so a plain load + in-memory projection is all that's needed.
+            var profiles = await db.QualityProfiles.ToListAsync();
             return Results.Ok(profiles.Select(p => new
             {
                 id = p.Id,
