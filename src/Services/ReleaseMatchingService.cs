@@ -714,6 +714,37 @@ public class ReleaseMatchingService
                         releaseRound, eventRound, release.Title);
                 }
             }
+
+            // VALIDATION 6c: Rally location identity (fallback when round can't disambiguate).
+            // Rally events have no session (FP/Quali/Race), so 6 is skipped; and some rally
+            // releases carry no round ("WRC FIA WORLD RALLY CHAMPIONSHIP 2026 Safari Rally
+            // Kenya Highlights"), so 6b is skipped too. Without a venue gate a broad highlights
+            // search lets a wrong-rally release match on shared series words (WRC/Rally/year).
+            // Only for session-less rally events where the round check above couldn't
+            // disambiguate (either side missing a round — incl. if the event's Round was
+            // never populated / wiped by a metadata sync): require the release to contain
+            // at least one distinctive location token from the event title.
+            if (string.IsNullOrEmpty(eventSession) && !(releaseRound.HasValue && eventRound.HasValue))
+            {
+                var eventLocationTokens = ExtractLocationTokens(evt.Title);
+                if (eventLocationTokens.Count > 0)
+                {
+                    var releaseLower = release.Title.ToLowerInvariant();
+                    if (!eventLocationTokens.Any(t => releaseLower.Contains(t)))
+                    {
+                        result.Confidence -= 100;
+                        result.IsHardRejection = true;
+                        result.Rejections.Add($"Rally location mismatch: release shares no location token with event ({string.Join("/", eventLocationTokens)})");
+                        _logger.LogDebug("[Release Matching] Hard rejection: no rally-location match (event tokens {Tokens}): '{Release}'",
+                            string.Join("/", eventLocationTokens), release.Title);
+                    }
+                    else
+                    {
+                        result.Confidence += 20;
+                        result.MatchReasons.Add("Rally location token matches");
+                    }
+                }
+            }
         }
 
         // VALIDATION 6c: Motorsport location mismatch detection
@@ -1229,6 +1260,32 @@ public class ReleaseMatchingService
             text = pattern.Replace(text, replacement);
         }
         return text;
+    }
+
+    // Generic series/format words to drop when isolating a rally's distinctive
+    // location tokens (country / rally name) from a motorsport event title.
+    private static readonly HashSet<string> _rallyCommonWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "wrc", "fia", "world", "rally", "rallye", "championship", "powered",
+        "grand", "prix", "round", "highlights", "event", "stage", "stages"
+    };
+
+    /// <summary>
+    /// Distinctive location/rally tokens from a motorsport event title (the country or
+    /// rally name), excluding generic series words, years and short tokens. Used to
+    /// reject wrong-rally releases that carry no round number to disambiguate on
+    /// (e.g. "WRC FIA WORLD RALLY CHAMPIONSHIP 2026 Safari Rally Kenya Highlights"
+    /// must not match an Acropolis Rally Greece event).
+    /// </summary>
+    private static List<string> ExtractLocationTokens(string? title)
+    {
+        return _splitSeparatorsRegex.Split(title ?? "")
+            .Where(w => w.Length >= 5
+                && !_rallyCommonWords.Contains(w)
+                && !w.All(char.IsDigit))
+            .Select(w => w.ToLowerInvariant())
+            .Distinct()
+            .ToList();
     }
 
     /// <summary>
