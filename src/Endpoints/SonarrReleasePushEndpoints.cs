@@ -6,6 +6,9 @@ using Microsoft.Extensions.Logging;
 using Sportarr.Api.Data;
 using Sportarr.Api.Models;
 using Sportarr.Api.Services;
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 
 namespace Sportarr.Api.Endpoints;
@@ -23,10 +26,45 @@ namespace Sportarr.Api.Endpoints;
 /// normal download-client → queue → history pipeline so it imports, seeds, and
 /// upgrades like every other grab.
 ///
-/// Response mirrors Sonarr: 200 with { approved | rejected, rejections }.
+/// Response mirrors Sonarr: 200 with a JSON ARRAY of release-decision objects
+/// (Sonarr's /api/v3/release/push returns List&lt;ReleaseResource&gt;). autobrr's
+/// native Sonarr client unmarshals the body into []ReleasePushResponse, so the
+/// response MUST be an array — returning a bare object trips autobrr's
+/// "cannot unmarshal object into Go value of type []sonarr.ReleasePushResponse".
 /// </summary>
 public static class SonarrReleasePushEndpoints
 {
+    // Sonarr returns an ARRAY of decisions; wrap our single decision in one.
+    private static IResult PushArray(bool approved, IEnumerable<string>? rejections,
+        int? eventId = null, string? downloadId = null) =>
+        Results.Ok(new[]
+        {
+            new
+            {
+                approved,
+                rejected = !approved,
+                tempRejected = false,
+                rejections = (rejections ?? Array.Empty<string>()).ToArray(),
+                eventId,
+                downloadId
+            }
+        });
+
+    // Malformed input → 400, but still array-shaped so any parser stays happy.
+    private static IResult PushBadRequest(string message) =>
+        Results.BadRequest(new[]
+        {
+            new
+            {
+                approved = false,
+                rejected = true,
+                tempRejected = false,
+                rejections = new[] { message },
+                eventId = (int?)null,
+                downloadId = (string?)null
+            }
+        });
+
     public static IEndpointRouteBuilder MapSonarrReleasePushEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/api/v3/release/push", async (
@@ -51,7 +89,7 @@ public static class SonarrReleasePushEndpoints
             catch (Exception ex)
             {
                 logger.LogWarning(ex, "[RELEASE PUSH] Invalid JSON body");
-                return Results.BadRequest(new { rejected = true, rejections = new[] { "Invalid JSON body" } });
+                return PushBadRequest("Invalid JSON body");
             }
 
             // Sonarr/autobrr field names vary in casing; accept the common spellings.
@@ -68,7 +106,7 @@ public static class SonarrReleasePushEndpoints
             var title = Get("title", "Title");
             var downloadUrl = Get("downloadUrl", "DownloadUrl", "magnetUrl", "MagnetUrl", "link");
             if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(downloadUrl))
-                return Results.BadRequest(new { rejected = true, rejections = new[] { "title and downloadUrl are required" } });
+                return PushBadRequest("title and downloadUrl are required");
 
             // Sonarr push sends protocol = "torrent"/"usenet"; normalize to Sportarr's "Torrent"/"Usenet".
             var protoRaw = (Get("protocol", "Protocol", "downloadProtocol", "DownloadProtocol") ?? "torrent").ToLowerInvariant();
@@ -126,7 +164,7 @@ public static class SonarrReleasePushEndpoints
             if (matched == null)
             {
                 logger.LogInformation("[RELEASE PUSH] No monitored event matched '{Title}' — rejecting", title);
-                return Results.Ok(new { rejected = true, rejections = new[] { "No matching monitored event" } });
+                return PushArray(false, new[] { "No matching monitored event" });
             }
             logger.LogInformation("[RELEASE PUSH] '{Title}' matched event {EventId} '{Event}' (confidence {Confidence})",
                 title, matched.Id, matched.Title, bestConfidence);
@@ -150,7 +188,7 @@ public static class SonarrReleasePushEndpoints
                 if (release.Rejections.Any())
                 {
                     logger.LogInformation("[RELEASE PUSH] Rejected by quality evaluation: {Reasons}", string.Join(", ", release.Rejections));
-                    return Results.Ok(new { rejected = true, rejections = release.Rejections });
+                    return PushArray(false, release.Rejections);
                 }
             }
 
@@ -162,7 +200,7 @@ public static class SonarrReleasePushEndpoints
                 if (pe.IsRejected)
                 {
                     logger.LogInformation("[RELEASE PUSH] Rejected by release profile: {Reasons}", string.Join(", ", pe.Rejections));
-                    return Results.Ok(new { rejected = true, rejections = pe.Rejections });
+                    return PushArray(false, pe.Rejections);
                 }
                 release.CustomFormatScore += pe.PreferredScore;
                 release.Score += pe.PreferredScore;
@@ -182,7 +220,7 @@ public static class SonarrReleasePushEndpoints
             if (already)
             {
                 logger.LogInformation("[RELEASE PUSH] '{Title}' already grabbed/queued for event {EventId}", title, matched.Id);
-                return Results.Ok(new { rejected = true, rejections = new[] { "Already grabbed or queued" } });
+                return PushArray(false, new[] { "Already grabbed or queued" });
             }
 
             // --- 5. No-downgrade gate: if the event already has a recognised file, require a higher score ---
@@ -196,7 +234,7 @@ public static class SonarrReleasePushEndpoints
                 {
                     logger.LogInformation("[RELEASE PUSH] '{Title}' not an upgrade for event {EventId} ({New} <= {Existing})",
                         title, matched.Id, newScore, existingScore);
-                    return Results.Ok(new { rejected = true, rejections = new[] { $"Existing file scores higher or equal ({existingScore})" } });
+                    return PushArray(false, new[] { $"Existing file scores higher or equal ({existingScore})" });
                 }
             }
 
@@ -207,7 +245,7 @@ public static class SonarrReleasePushEndpoints
                 .OrderBy(dc => dc.Priority)
                 .FirstOrDefaultAsync();
             if (downloadClient == null)
-                return Results.Ok(new { rejected = true, rejections = new[] { $"No enabled {release.Protocol} download client configured" } });
+                return PushArray(false, new[] { $"No enabled {release.Protocol} download client configured" });
 
             var indexerRecord = !string.IsNullOrEmpty(release.Indexer)
                 ? await db.Indexers.FirstOrDefaultAsync(i => i.Name == release.Indexer)
@@ -226,13 +264,13 @@ public static class SonarrReleasePushEndpoints
             catch (Exception ex)
             {
                 logger.LogError(ex, "[RELEASE PUSH] Exception adding download");
-                return Results.Ok(new { rejected = true, rejections = new[] { $"Download client error: {ex.Message}" } });
+                return PushArray(false, new[] { $"Download client error: {ex.Message}" });
             }
 
             if (!downloadResult.Success || downloadResult.DownloadId == null)
             {
                 logger.LogWarning("[RELEASE PUSH] Download client rejected '{Title}': {Error}", title, downloadResult.ErrorMessage);
-                return Results.Ok(new { rejected = true, rejections = new[] { downloadResult.ErrorMessage ?? "Download client rejected the release" } });
+                return PushArray(false, new[] { downloadResult.ErrorMessage ?? "Download client rejected the release" });
             }
 
             // Supersede previous grabs for this event (full-event part) so the old file isn't re-grabbed.
@@ -321,13 +359,7 @@ public static class SonarrReleasePushEndpoints
             logger.LogInformation("[RELEASE PUSH] ✓ Grabbed '{Title}' for event {EventId} '{Event}' via {Client}",
                 title, matched.Id, matched.Title, downloadClient.Name);
 
-            return Results.Ok(new
-            {
-                approved = true,
-                rejected = false,
-                eventId = matched.Id,
-                downloadId = downloadResult.DownloadId
-            });
+            return PushArray(true, null, matched.Id, downloadResult.DownloadId);
         });
 
         return app;

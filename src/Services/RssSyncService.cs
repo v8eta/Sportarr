@@ -406,6 +406,33 @@ public class RssSyncService : BackgroundService
     }
 
     /// <summary>
+    /// Canonical form of a release title for cross-indexer dedup: drop a trailing
+    /// video container extension (R4E lists single .mkv files), then keep only
+    /// letters/digits lowercased. So "Formula1 2026 Austrian Grand Prix 1080p WEB
+    /// h264-VERUM", "formula1.2026.austrian.grand.prix.1080p.web.h264-verum" and
+    /// "...-verum.mkv" all collapse to the same string.
+    /// </summary>
+    private static string NormalizeReleaseName(string? name)
+    {
+        if (string.IsNullOrEmpty(name)) return string.Empty;
+        var s = name.Trim();
+        foreach (var ext in new[] { ".mkv", ".mp4", ".ts", ".avi", ".m2ts", ".mov", ".wmv" })
+        {
+            if (s.EndsWith(ext, System.StringComparison.OrdinalIgnoreCase))
+            {
+                s = s.Substring(0, s.Length - ext.Length);
+                break;
+            }
+        }
+        var chars = new char[s.Length];
+        int n = 0;
+        foreach (var c in s)
+            if (char.IsLetterOrDigit(c))
+                chars[n++] = char.ToLowerInvariant(c);
+        return new string(chars, 0, n);
+    }
+
+    /// <summary>
     /// Check if we should grab this release for the matched event.
     /// Now part-aware and uses total score (QualityScore + CustomFormatScore) for comparisons.
     /// Can upgrade queued items if a higher-scored release is found.
@@ -542,6 +569,27 @@ public class RssSyncService : BackgroundService
                 .AnyAsync(g => g.EventId == evt.Id
                             && g.Guid == release.Guid
                             && !g.Superseded, cancellationToken);
+        }
+
+        // 3b-ii. Same release from a DIFFERENT indexer/protocol. The hash/guid checks
+        // above are per-indexer, so the SAME release carried by N indexers grabs N
+        // times (observed: one race grabbed 6× across TL + R4E + 4 usenet indexers,
+        // each download then rejected at import as "not an upgrade"). Dedup on a
+        // normalized title (separators/case/extension stripped) so we grab a given
+        // release once. Superseded grabs (replaced by a real upgrade) are excluded,
+        // so quality upgrades — which have a different title — are unaffected.
+        if (!alreadyGrabbed)
+        {
+            var candidateNorm = NormalizeReleaseName(release.Title);
+            if (candidateNorm.Length > 0)
+            {
+                var priorTitles = await db.GrabHistory
+                    .Where(g => g.EventId == evt.Id && !g.Superseded)
+                    .Select(g => g.Title)
+                    .ToListAsync(cancellationToken);
+                if (priorTitles.Any(t => NormalizeReleaseName(t) == candidateNorm))
+                    alreadyGrabbed = true;
+            }
         }
 
         if (alreadyGrabbed)

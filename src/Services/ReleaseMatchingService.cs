@@ -1522,7 +1522,7 @@ public class ReleaseMatchingService
         { "Hungary", new(StringComparer.OrdinalIgnoreCase) { "Hungarian", "Budapest", "Hungaroring" } },
         { "Belgium", new(StringComparer.OrdinalIgnoreCase) { "Belgian", "Spa", "Spa-Francorchamps" } },
         { "Netherlands", new(StringComparer.OrdinalIgnoreCase) { "Dutch", "Zandvoort", "Assen" } },
-        { "Italy", new(StringComparer.OrdinalIgnoreCase) { "Italian", "Monza", "Mugello" } },
+        { "Italy", new(StringComparer.OrdinalIgnoreCase) { "Italian", "Monza", "Mugello", "Italia", "Sardegna", "Sardinia" } },
         { "Azerbaijan", new(StringComparer.OrdinalIgnoreCase) { "Azerbaijani", "Baku" } },
         { "Singapore", new(StringComparer.OrdinalIgnoreCase) { "Singaporean", "Marina Bay" } },
         { "United States", new(StringComparer.OrdinalIgnoreCase) { "USA", "US", "American", "America", "COTA", "Austin", "Texas" } },
@@ -1552,6 +1552,14 @@ public class ReleaseMatchingService
         { "Uruguay", new(StringComparer.OrdinalIgnoreCase) { "Uruguayan" } },
         { "Colombia", new(StringComparer.OrdinalIgnoreCase) { "Colombian" } },
         { "Morocco", new(StringComparer.OrdinalIgnoreCase) { "Moroccan", "Marrakech" } },
+        // WRC rally rounds not on the F1/MotoGP calendar (added so the event-location
+        // lookup recognises them and wrong-rally releases are rejected).
+        { "Greece", new(StringComparer.OrdinalIgnoreCase) { "Greek", "Acropolis" } },
+        { "Kenya", new(StringComparer.OrdinalIgnoreCase) { "Kenyan", "Naivasha" } },
+        { "Croatia", new(StringComparer.OrdinalIgnoreCase) { "Croatian", "Zagreb" } },
+        { "Estonia", new(StringComparer.OrdinalIgnoreCase) { "Estonian", "Tartu" } },
+        { "Paraguay", new(StringComparer.OrdinalIgnoreCase) { "Paraguayan" } },
+        { "Canary Islands", new(StringComparer.OrdinalIgnoreCase) { "Canarias", "Islas Canarias", "Canary" } },
     };
 
     /// <summary>
