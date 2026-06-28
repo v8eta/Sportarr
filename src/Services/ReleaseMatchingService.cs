@@ -217,8 +217,14 @@ public class ReleaseMatchingService
             release.Title, evt.Title);
 
         // VALIDATION 0: Reject non-event content (press conferences, interviews, etc.)
-        // This must be checked FIRST before any other validation
-        var nonEventContent = DetectNonEventContent(release.Title);
+        // This must be checked FIRST before any other validation.
+        // Exception: leagues that deliberately target highlights (e.g. WRC, whose
+        // SearchQueryTemplate references "Highlights" and whose release profile
+        // *requires* "Highlights") treat the highlights show AS the event. For them
+        // "highlights" must NOT be hard-rejected as non-event junk, or the only
+        // content that exists for the event is never grabbed (forcing manual grabs).
+        var allowHighlights = LeagueWantsHighlights(evt);
+        var nonEventContent = DetectNonEventContent(release.Title, allowHighlights);
         if (nonEventContent != null)
         {
             result.Confidence = 0;
@@ -1226,10 +1232,24 @@ public class ReleaseMatchingService
     }
 
     /// <summary>
+    /// True when the event's league deliberately targets highlights content — its
+    /// SearchQueryTemplate references "highlights" (e.g. WRC, "{League} {Year}
+    /// Round{Round:00} Highlights"). For such leagues a highlights release IS the
+    /// event, so the non-event-content filter must not hard-reject "highlights".
+    /// Null league/template (most leagues) returns false → highlights stay rejected.
+    /// </summary>
+    private static bool LeagueWantsHighlights(Event evt)
+    {
+        var template = evt.League?.SearchQueryTemplate;
+        return !string.IsNullOrWhiteSpace(template)
+            && template.Contains("highlight", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// Detect if a release is non-event content (press conference, interview, etc.)
     /// Returns the type of non-event content detected, or null if it appears to be actual event content.
     /// </summary>
-    private string? DetectNonEventContent(string releaseTitle)
+    private string? DetectNonEventContent(string releaseTitle, bool allowHighlights = false)
     {
         foreach (var pattern in NonEventContentPatterns)
         {
@@ -1238,6 +1258,12 @@ public class ReleaseMatchingService
             {
                 // Return a human-readable description of what was detected
                 var detected = match.Value.ToLowerInvariant();
+
+                // For highlights-targeting leagues (WRC) the highlights show IS the
+                // event — skip this match so it isn't hard-rejected. Other non-event
+                // keywords (press conference, review, recap, …) still apply.
+                if (allowHighlights && detected.Contains("highlight"))
+                    continue;
 
                 // Map to friendly names
                 if (detected.Contains("press") && detected.Contains("conf"))
