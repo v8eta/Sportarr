@@ -57,6 +57,22 @@ public class CompletedDownloadHandlingService : BackgroundService
 
         _logger.LogDebug("[Completed Download Handler] Checking for completed downloads");
 
+        // Reap finished queue rows. A download that has Imported (or been handled as a
+        // not-an-upgrade ImportWarning) is done; its record lives on in GrabHistory /
+        // ImportHistory + EventFiles. Leaving the queue row is what made them pile up
+        // (the \"Status=7\" stuck rows). Keep them ~1h for the activity view, then remove.
+        var reapCutoff = DateTime.UtcNow.AddMinutes(-60);
+        var finishedRows = await db.DownloadQueue
+            .Where(d => (d.Status == DownloadStatus.Imported || d.Status == DownloadStatus.ImportWarning)
+                        && d.LastUpdate < reapCutoff)
+            .ToListAsync();
+        if (finishedRows.Count > 0)
+        {
+            db.DownloadQueue.RemoveRange(finishedRows);
+            await db.SaveChangesAsync();
+            _logger.LogInformation("[Completed Download Handler] Reaped {Count} finished queue row(s)", finishedRows.Count);
+        }
+
         // Get all downloads that are currently downloading or queued
         var activeDownloads = await db.DownloadQueue
             .Where(d => d.Status == DownloadStatus.Downloading || d.Status == DownloadStatus.Queued)

@@ -4,7 +4,6 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging;
 using Sportarr.Api.Data;
 using Sportarr.Api.Services;
-using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -24,16 +23,6 @@ public static class SonarrCommandEndpoints
         ["IndexerSync"] = "IndexerSync",
         ["EpgSync"] = "EpgSync",
     };
-
-    // Sonarr-compat search command names -> routed to the native EventSearch task
-    // (TaskService.EventSearchAsync -> AutomaticSearchService = search AND grab the best).
-    private static bool IsSearchCommand(string name) =>
-        name.Equals("EventSearch", StringComparison.OrdinalIgnoreCase) ||
-        name.Equals("EpisodeSearch", StringComparison.OrdinalIgnoreCase) ||
-        name.Equals("MissingEventSearch", StringComparison.OrdinalIgnoreCase) ||
-        name.Equals("MissingEpisodeSearch", StringComparison.OrdinalIgnoreCase) ||
-        name.Equals("LeagueSearch", StringComparison.OrdinalIgnoreCase) ||
-        name.Equals("SeriesSearch", StringComparison.OrdinalIgnoreCase);
 
     public static IEndpointRouteBuilder MapSonarrCommandEndpoints(this IEndpointRouteBuilder app)
     {
@@ -249,80 +238,6 @@ public static class SonarrCommandEndpoints
                         trigger = "manual",
                         sendUpdatesToClient = true,
                         updateScheduledTask = false
-                    });
-                }
-                else if (!string.IsNullOrEmpty(commandName) && IsSearchCommand(commandName))
-                {
-                    // Sonarr-compat search -> queue native EventSearch task(s) (search + grab best).
-                    var cmd = commandName!.ToLowerInvariant();
-                    List<int> eventIds;
-
-                    if (cmd is "eventsearch" or "episodesearch")
-                    {
-                        eventIds = new List<int>();
-                        foreach (var key in new[] { "eventIds", "episodeIds" })
-                        {
-                            if (root.TryGetProperty(key, out var arr) && arr.ValueKind == JsonValueKind.Array)
-                            {
-                                foreach (var el in arr.EnumerateArray())
-                                {
-                                    if (el.ValueKind == JsonValueKind.Number && el.TryGetInt32(out var id))
-                                        eventIds.Add(id);
-                                }
-                            }
-                        }
-                    }
-                    else if (cmd is "leaguesearch" or "seriessearch")
-                    {
-                        int? leagueId = null;
-                        foreach (var key in new[] { "leagueId", "seriesId" })
-                        {
-                            if (root.TryGetProperty(key, out var le) && le.ValueKind == JsonValueKind.Number && le.TryGetInt32(out var lid))
-                                leagueId = lid;
-                        }
-                        var q = db.Events.Where(e => e.Monitored && !e.HasFile && e.EventDate <= DateTime.UtcNow);
-                        if (leagueId.HasValue) q = q.Where(e => e.LeagueId == leagueId.Value);
-                        eventIds = await q.Select(e => e.Id).ToListAsync();
-                    }
-                    else // missingeventsearch / missingepisodesearch
-                    {
-                        eventIds = await db.Events
-                            .Where(e => e.Monitored && !e.HasFile && e.EventDate <= DateTime.UtcNow)
-                            .Select(e => e.Id).ToListAsync();
-                    }
-
-                    eventIds = eventIds.Distinct().ToList();
-                    if (eventIds.Count == 0)
-                    {
-                        logger.LogInformation("[SONARR-API] {Command}: no matching events to search", commandName);
-                        return Results.Ok(new { id = 0, name = commandName, status = "completed", message = "No matching events to search" });
-                    }
-
-                    var searchTaskIds = new List<int>();
-                    foreach (var id in eventIds)
-                    {
-                        var evt = await db.Events.FindAsync(id);
-                        var queuedSearch = await taskService.QueueTaskAsync(
-                            name: $"Search: {(evt?.Title ?? ("Event " + id))}",
-                            commandName: "EventSearch",
-                            priority: 10,
-                            body: id.ToString());
-                        searchTaskIds.Add(queuedSearch.Id);
-                    }
-                    logger.LogInformation("[SONARR-API] {Command} -> queued {Count} EventSearch task(s) for events [{Ids}]",
-                        commandName, searchTaskIds.Count, string.Join(",", eventIds));
-
-                    return Results.Ok(new
-                    {
-                        id = searchTaskIds.Count > 0 ? searchTaskIds[0] : 0,
-                        name = "EventSearch",
-                        commandName = "EventSearch",
-                        status = "queued",
-                        queued = DateTime.UtcNow.ToString("o"),
-                        trigger = "manual",
-                        sendUpdatesToClient = true,
-                        updateScheduledTask = false,
-                        body = new { eventIds, taskIds = searchTaskIds }
                     });
                 }
                 else

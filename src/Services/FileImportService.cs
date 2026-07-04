@@ -93,6 +93,31 @@ public class FileImportService : IFileImportService
     /// <param name="download">The download queue item to import</param>
     /// <param name="overridePath">Optional: Use this path instead of querying download client.
     /// Used for manual imports where we already know the file path.</param>
+    // Best-effort deletion of a download source in the client completed dir (Usenet
+    // only - torrents keep seeding). Used when a completed download is rejected as
+    // \"not an upgrade\" so its bytes do not linger as an nlink=1 orphan.
+    private void TryDeleteDownloadSource(string? path)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(path)) return;
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+                _logger.LogInformation("[Import] Deleted not-an-upgrade source file: {Path}", path);
+            }
+            else if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+                _logger.LogInformation("[Import] Deleted not-an-upgrade source folder: {Path}", path);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Import] Failed to delete not-an-upgrade source: {Path}", path);
+        }
+    }
+
     public async Task<ImportHistory> ImportDownloadAsync(DownloadQueueItem download, string? overridePath = null)
     {
         _logger.LogInformation("Starting import for download: {Title} (ID: {DownloadId})",
@@ -380,7 +405,13 @@ public class FileImportService : IFileImportService
                     download.ErrorMessage = $"Not an upgrade for existing file (existing: {upgradedFile.Quality} score {existingTotalScore}, new: {download.Quality} score {newTotalScore})";
                     download.LastUpdate = DateTime.UtcNow;
                     await _db.SaveChangesAsync();
-                    // File was NOT transferred - no orphan cleanup needed
+                    // The new file was NOT transferred to the library, so its source download
+                    // sits in the client completed dir as an nlink=1 orphan. For Usenet
+                    // (nothing to seed) delete it now instead of leaving it for a janitor;
+                    // this is the duplicate-grab / same-release-from-many-indexers case.
+                    // Torrents are left alone so they keep seeding for ratio.
+                    if (string.Equals(download.Protocol, "Usenet", StringComparison.OrdinalIgnoreCase))
+                        TryDeleteDownloadSource(downloadPath);
                     return null!;
                 }
 
