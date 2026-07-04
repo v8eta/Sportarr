@@ -300,6 +300,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<EventPartDetector>();
         services.AddScoped<FileFormatManager>();
         services.AddScoped<FileImportService>();
+        services.AddScoped<DownloadProcessingService>();
         services.AddScoped<ImportMatchingService>();
         services.AddScoped<LibraryImportService>();
         services.AddScoped<ImportListService>();

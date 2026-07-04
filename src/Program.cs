@@ -766,6 +766,7 @@ app.MapTagsManagementEndpoints();
 app.MapRootFolderAndNotificationEndpoints();
 app.MapSettingsEndpoints();
 app.MapDownloadClientEndpoints();
+app.MapDownloadCompletionEndpoints();
 app.MapQueueAndImportEndpoints();
 app.MapHistoryEndpoints();
 app.MapBlocklistAndWantedEndpoints();
