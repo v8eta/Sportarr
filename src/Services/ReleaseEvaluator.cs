@@ -150,7 +150,7 @@ public class ReleaseEvaluator
         }
 
         // Check quality profile
-        if (profile != null && !string.IsNullOrEmpty(evaluation.Quality) && evaluation.Quality != "Unknown")
+        if (profile != null && !string.IsNullOrEmpty(evaluation.Quality))
         {
             var isAllowed = IsQualityAllowed(qualityModel.Quality, profile);
 

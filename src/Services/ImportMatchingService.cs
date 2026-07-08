@@ -335,7 +335,19 @@ public class ImportMatchingService
             var eventSession = EventPartDetector.DetectMotorsportSessionType(evt.Title, evt.League?.Name ?? "");
             if (!string.IsNullOrEmpty(eventSession))
             {
-                if (eventSession.Equals(sportsResult.Session, StringComparison.OrdinalIgnoreCase))
+                var isMotoGpImport = (evt.League?.Name ?? "").ToLowerInvariant().Contains("motogp");
+                if (isMotoGpImport
+                    && sportsResult.Session.Equals("Qualifying", StringComparison.OrdinalIgnoreCase)
+                    && (eventSession.Equals("Qualifying 1", StringComparison.OrdinalIgnoreCase)
+                        || eventSession.Equals("Qualifying 2", StringComparison.OrdinalIgnoreCase)))
+                {
+                    // MotoGP combined "Qualifying" file imports to the Qualifying 1 event only.
+                    if (eventSession.Equals("Qualifying 1", StringComparison.OrdinalIgnoreCase))
+                        confidence += 20;
+                    else
+                        confidence -= 100;
+                }
+                else if (eventSession.Equals(sportsResult.Session, StringComparison.OrdinalIgnoreCase))
                 {
                     confidence += 20; // Session matches — strong signal
                     _logger.LogDebug("[Import Matching] Session match boost: '{Session}' matches event '{EventTitle}'",
