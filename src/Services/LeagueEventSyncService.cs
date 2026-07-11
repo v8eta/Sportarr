@@ -551,7 +551,9 @@ public class LeagueEventSyncService
                 : allLocalSeasonEvents;
 
             var orphanedEvents = localEventsForSeason
-                .Where(e => !apiExternalIds.Contains(e.ExternalId!) || fossilTwinByEventId.ContainsKey(e.Id))
+                // Remove orphans (not in API) or fossil twins, but NEVER synth- events (managed idempotently by SynthesizeMissingMotorsportQualifyingAsync).
+                .Where(e => (!apiExternalIds.Contains(e.ExternalId!) || fossilTwinByEventId.ContainsKey(e.Id))
+                    && (e.ExternalId == null || !e.ExternalId.StartsWith("synth-", StringComparison.Ordinal)))
                 .ToList();
 
             // Second safety guard: if more than half the local season
@@ -794,6 +796,9 @@ public class LeagueEventSyncService
         // Update league's last sync timestamp
         league.LastUpdate = DateTime.UtcNow;
         await _db.SaveChangesAsync();
+
+        // Synthesize MotoGP qualifying events the hub omits (before the renumber below so they get episode numbers).
+        await SynthesizeMissingMotorsportQualifyingAsync(league, currentSeason);
 
         if (onProgress != null)
         {
@@ -1736,6 +1741,94 @@ public class LeagueEventSyncService
     /// - "" (empty) = NO sessions monitored (user explicitly deselected all)
     /// - "Race,Qualifying" = only those session types monitored
     /// </summary>
+    /// <summary>
+    /// The sportarr.net hub / TheSportsDB lists MotoGP qualifying (Qualifying 1 / Qualifying 2) for
+    /// only a few rounds even though every round has them and trackers (e.g. BTN) carry the releases.
+    /// For any MotoGP round that has a Race/Sprint but no qualifying event, synthesize the two
+    /// qualifying events so releases can match. Idempotent, runs every sync (self-healing; new rounds
+    /// self-populate). Synthetic ExternalId ("synth-...") keeps them out of the hub episode-number map
+    /// so RecalculateEpisodeNumbers APPENDS their numbers after the hub range (existing hub events/files
+    /// are never renumbered), and the orphan cleanup skips them.
+    /// </summary>
+    private async Task SynthesizeMissingMotorsportQualifyingAsync(League league, string currentSeason)
+    {
+        if (!string.Equals(league.Sport, "Motorsport", StringComparison.OrdinalIgnoreCase)) return;
+        if (league.Name?.Contains("MotoGP", StringComparison.OrdinalIgnoreCase) != true) return;
+        if (league.MonitoredSessionTypes?.Contains("Qualifying", StringComparison.OrdinalIgnoreCase) != true) return;
+
+        var events = await _db.Events.Where(e => e.LeagueId == league.Id && e.Season == currentSeason).ToListAsync();
+        var existingIds = new HashSet<string>(events.Where(e => e.ExternalId != null).Select(e => e.ExternalId!));
+        int created = 0;
+        var touchedSeasons = new HashSet<string>();
+
+        foreach (var group in events.GroupBy(e => new { e.Season, e.Round }))
+        {
+            if (string.IsNullOrEmpty(group.Key.Season) || string.IsNullOrEmpty(group.Key.Round)) continue;
+            if (group.Any(e => (e.Title ?? string.Empty).Contains("Qualifying", StringComparison.OrdinalIgnoreCase))) continue;
+
+            var anchor = group.FirstOrDefault(e => (e.Title ?? string.Empty).Contains("Sprint", StringComparison.OrdinalIgnoreCase))
+                         ?? group.FirstOrDefault(e => (e.Title ?? string.Empty).Contains("Race", StringComparison.OrdinalIgnoreCase));
+            if (anchor == null) continue;
+
+            var location = ExtractMotorsportLocation(anchor.Title);
+            if (string.IsNullOrWhiteSpace(location)) continue;
+
+            for (int n = 1; n <= 2; n++)
+            {
+                var extId = $"synth-motogp-q{n}-{league.Id}-{group.Key.Season}-r{group.Key.Round}";
+                if (existingIds.Contains(extId)) continue;
+                var title = $"{location} - Qualifying {n}";
+                _db.Events.Add(new Event
+                {
+                    ExternalId = extId,
+                    Title = title,
+                    Sport = anchor.Sport,
+                    LeagueId = league.Id,
+                    Season = group.Key.Season,
+                    SeasonNumber = anchor.SeasonNumber,
+                    Round = group.Key.Round,
+                    EventDate = anchor.EventDate.AddMinutes(n == 1 ? -300 : -270),
+                    Venue = anchor.Venue,
+                    Location = anchor.Location,
+                    Status = anchor.Status,
+                    // Inherit the round's (Race/Sprint anchor) monitored state so qualifying is monitored
+                    // exactly when the round is -- ShouldMonitorEvent is now-relative and would wrongly
+                    // unmonitor qualifying synthesized for already-aired rounds whose Race is still monitored.
+                    Monitored = anchor.Monitored
+                        && ShouldMonitorMotorsportSession(league.Sport, league.Name ?? string.Empty, title, league.MonitoredSessionTypes),
+                    QualityProfileId = league.QualityProfileId,
+                    HasFile = false,
+                    Added = DateTime.UtcNow,
+                    LastUpdate = DateTime.UtcNow
+                });
+                existingIds.Add(extId);
+                created++;
+                touchedSeasons.Add(group.Key.Season!);
+            }
+        }
+
+        if (created > 0)
+        {
+            await _db.SaveChangesAsync();
+            foreach (var s in touchedSeasons)
+                _seasonsNeedingRenumber.Add((league.Id, s));
+            _logger.LogInformation("[League Event Sync] Synthesized {Count} MotoGP qualifying event(s) the hub omits ({Seasons} season(s))", created, touchedSeasons.Count);
+        }
+    }
+
+    private static string ExtractMotorsportLocation(string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return string.Empty;
+        var loc = title;
+        var dashIdx = loc.IndexOf(" - ", StringComparison.Ordinal);
+        if (dashIdx > 0) loc = loc.Substring(0, dashIdx);
+        if (loc.EndsWith(" Grand Prix", StringComparison.OrdinalIgnoreCase))
+            loc = loc.Substring(0, loc.Length - " Grand Prix".Length);
+        if (loc.EndsWith(" GP", StringComparison.OrdinalIgnoreCase))
+            loc = loc.Substring(0, loc.Length - 3);
+        return loc.Trim();
+    }
+
     private static bool ShouldMonitorMotorsportSession(string sport, string leagueName, string eventTitle, string? monitoredSessionTypes)
     {
         // Only apply session type filtering for Motorsport (hub ships these
