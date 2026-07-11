@@ -724,7 +724,26 @@ public class ReleaseMatchingService
                 var normalizedEventSession = EventPartDetector.NormalizeMotorsportSession(eventSession);
                 var normalizedReleaseSession = EventPartDetector.NormalizeMotorsportSession(releaseSession);
 
-                if (normalizedEventSession == normalizedReleaseSession)
+                var isMotoGpQ = (evt.League?.Name ?? "").ToLowerInvariant().Contains("motogp");
+                if (isMotoGpQ && normalizedReleaseSession == "Qualifying"
+                    && (normalizedEventSession == "Qualifying 1" || normalizedEventSession == "Qualifying 2"))
+                {
+                    // MotoGP splits qualifying into Qualifying 1/2 events, but the broadcast is ONE combined
+                    // "Qualifying" file. Route it to the Qualifying 1 event only (prevents a double-grab of the
+                    // same release into both events). Explicit Q1/Q2 releases still hit the equality branch below.
+                    if (normalizedEventSession == "Qualifying 1")
+                    {
+                        result.Confidence += 25;
+                        result.MatchReasons.Add("MotoGP combined Qualifying routed to Qualifying 1");
+                    }
+                    else
+                    {
+                        result.Confidence -= 100;
+                        result.IsHardRejection = true;
+                        result.Rejections.Add("MotoGP combined Qualifying is routed to the Qualifying 1 event (prevents double-grab)");
+                    }
+                }
+                else if (normalizedEventSession == normalizedReleaseSession)
                 {
                     result.Confidence += 25;
                     result.MatchReasons.Add($"Session type matches: {normalizedEventSession}");
